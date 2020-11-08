@@ -1,1 +1,4 @@
 CAN_ID_BIT = 29
+
+CAN_DATA_LEN    = 8
+CAN_FRAME_LEN   = 4
