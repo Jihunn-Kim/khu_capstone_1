@@ -4,6 +4,29 @@ import pandas as pd
 import numpy as np
 from torch.utils.data import Dataset, DataLoader
 import const
+from torch.utils.data.sampler import Sampler
+
+# 0, batch * 1, batch * 2 ...
+class BatchIntervalSampler(Sampler):
+
+    def __init__(self, data_length, batch_size):
+        # data length 가 batch size 로 나뉘게 만듦
+        if data_length % batch_size != 0:
+            data_length = data_length - (data_length % batch_size)
+
+        self.indices =[]
+        # print(data_length)
+        batch_group_interval = int(data_length / batch_size)
+        for group_idx in range(batch_group_interval):
+            for local_idx in range(batch_size):
+                self.indices.append(group_idx + local_idx * batch_group_interval)
+        # print('sampler init', self.indices)
+
+    def __iter__(self):
+        return iter(self.indices)
+
+    def __len__(self):
+        return len(self.indices)
 
 
 def unpack_bits(x, num_bits):
@@ -57,21 +80,11 @@ def GetCanDataset(total_edge, fold_num, csv_path, txt_path):
     csv = pd.read_csv(csv_path)
     txt = open(txt_path, "r")
     lines = txt.read().splitlines()
-    frame_size = const.CAN_FRAME_LEN
+
     idx = 0
     datum = []
     label_temp = []
-    while idx + frame_size  - 1 < len(csv) // 2:
-        # csv_row = csv.iloc[idx + frame_size - 1]
-        # data_len = csv_row[1]
-        # is_regular = (csv_row[data_len + 2] == 'R')
-
-        # if is_regular:
-        #     datum.append((idx, 1))
-        #     label_temp.append(1)
-        # else:
-        #     datum.append((idx, 0))
-        #     label_temp.append(0)
+    while idx < len(csv) // 2:
         line = lines[idx]
         if not line:
             break
@@ -97,38 +110,18 @@ def GetCanDataset(total_edge, fold_num, csv_path, txt_path):
         else:
             test_datum = datum[i*fold_length:(i+1)*fold_length]
 
-    min_size = 0
-    output_class_num = 2
+
     N = len(train_label_temp)
     train_label_temp = np.array(train_label_temp)
+
+    proportions = np.random.dirichlet(np.repeat(1, total_edge))
+    proportions = np.cumsum(proportions)
+    idx_batch = [[] for _ in range(total_edge)]
     data_idx_map = {}
-
-    # proportions = np.random.dirichlet(np.repeat(1, total_edge))
-    # proportions = np.cumsum(proportions)
-    # idx_batch = [[] for _ in range(total_edge)]
-    # prev = 0.0
-    # for j in range(total_edge):
-    #     idx_batch[j] = [idx for idx in range(int(prev * N), int(proportions[j] * N))]
-    #     prev = proportions[j]
-    #     np.random.shuffle(idx_batch[j])
-    #     data_idx_map[j] = idx_batch[j]
-        
-    while min_size < 512:
-        idx_batch = [[] for _ in range(total_edge)]
-        # for each class in the dataset
-        for k in range(output_class_num):
-            idx_k = np.where(train_label_temp == k)[0]
-            np.random.shuffle(idx_k)
-            proportions = np.random.dirichlet(np.repeat(1, total_edge))
-            ## Balance
-            proportions = np.array([p*(len(idx_j)<N/total_edge) for p,idx_j in zip(proportions,idx_batch)])
-            proportions = proportions/proportions.sum()
-            proportions = (np.cumsum(proportions)*len(idx_k)).astype(int)[:-1]
-            idx_batch = [idx_j + idx.tolist() for idx_j,idx in zip(idx_batch,np.split(idx_k,proportions))]
-            min_size = min([len(idx_j) for idx_j in idx_batch])
-
+    prev = 0.0
     for j in range(total_edge):
-        np.random.shuffle(idx_batch[j])
+        idx_batch[j] = [idx for idx in range(int(prev * N), int(proportions[j] * N))]
+        prev = proportions[j]
         data_idx_map[j] = idx_batch[j]
 
     _, net_data_count = record_net_data_stats(train_label_temp, data_idx_map)
@@ -141,8 +134,7 @@ class CanDataset(Dataset):
     def __init__(self, csv, datum, is_train=True):
         self.csv = csv
         self.datum = datum
-        self.is_train = is_train
-        if self.is_train:
+        if is_train:
           self.idx_map = []
         else:
           self.idx_map = [idx for idx in range(len(self.datum))]
@@ -154,34 +146,148 @@ class CanDataset(Dataset):
         self.idx_map = data_idx_map
 
     def __getitem__(self, idx):
+        # print(idx)
         start_i = self.datum[self.idx_map[idx]][0]
-        if self.is_train:
-            is_regular = self.datum[self.idx_map[idx]][1]
-            l = np.zeros((const.CAN_FRAME_LEN, const.CAN_DATA_LEN))
-            '''
-                각 바이트 값은 모두 normalized 된다.
-                0 ~ 255 -> 0.0 ~ 1.0
-            '''
-            for i in range(const.CAN_FRAME_LEN):
-                data_len = self.csv.iloc[start_i + i, 1]
-                for j in range(data_len):
-                    k = int(self.csv.iloc[start_i + i, 2 + j], 16) / 255.0
-                    l[i][j] = k
-            l = np.reshape(l, (1, const.CAN_FRAME_LEN, const.CAN_DATA_LEN))
-        else:
-            l = np.zeros((const.CAN_DATA_LEN))
-            data_len = self.csv.iloc[start_i, 1]
-            is_regular = self.csv.iloc[start_i, data_len + 2] == 'R'
-            if is_regular:
-                is_regular = 1
-            else:
-                is_regular = 0
-            for j in range(data_len):
-                k = int(self.csv.iloc[start_i, 2 + j], 16) / 255.0
-                l[j] = k
-            l = np.reshape(l, (1, const.CAN_DATA_LEN))
+        is_regular = self.datum[self.idx_map[idx]][1]
 
-        return (l, is_regular)
+        packet = np.zeros((1, const.CAN_DATA_LEN))
+        data_len = self.csv.iloc[start_i, 1]
+        for j in range(data_len):
+            data_value = int(self.csv.iloc[start_i, 2 + j], 16) / 255.0
+            packet[0, j] = data_value
+
+        return (packet, is_regular)
+
+
+# def GetCanDataset(total_edge, fold_num, csv_path, txt_path):
+#     csv = pd.read_csv(csv_path)
+#     txt = open(txt_path, "r")
+#     lines = txt.read().splitlines()
+#     frame_size = const.CAN_FRAME_LEN
+#     idx = 0
+#     datum = []
+#     label_temp = []
+#     while idx + frame_size  - 1 < len(csv) // 2:
+#         # csv_row = csv.iloc[idx + frame_size - 1]
+#         # data_len = csv_row[1]
+#         # is_regular = (csv_row[data_len + 2] == 'R')
+
+#         # if is_regular:
+#         #     datum.append((idx, 1))
+#         #     label_temp.append(1)
+#         # else:
+#         #     datum.append((idx, 0))
+#         #     label_temp.append(0)
+#         line = lines[idx]
+#         if not line:
+#             break
+
+#         if line.split(' ')[1] == 'R':
+#             datum.append((idx, 1))
+#             label_temp.append(1)
+#         else:
+#             datum.append((idx, 0))
+#             label_temp.append(0)
+
+#         idx += 1
+#         if (idx % 1000000 == 0):
+#             print(idx)
+
+#     fold_length = int(len(label_temp) / 5)
+#     train_datum = []
+#     train_label_temp = []
+#     for i in range(5):
+#         if i != fold_num:
+#             train_datum += datum[i*fold_length:(i+1)*fold_length]
+#             train_label_temp += label_temp[i*fold_length:(i+1)*fold_length]
+#         else:
+#             test_datum = datum[i*fold_length:(i+1)*fold_length]
+
+#     min_size = 0
+#     output_class_num = 2
+#     N = len(train_label_temp)
+#     train_label_temp = np.array(train_label_temp)
+#     data_idx_map = {}
+
+#     # proportions = np.random.dirichlet(np.repeat(1, total_edge))
+#     # proportions = np.cumsum(proportions)
+#     # idx_batch = [[] for _ in range(total_edge)]
+#     # prev = 0.0
+#     # for j in range(total_edge):
+#     #     idx_batch[j] = [idx for idx in range(int(prev * N), int(proportions[j] * N))]
+#     #     prev = proportions[j]
+#     #     np.random.shuffle(idx_batch[j])
+#     #     data_idx_map[j] = idx_batch[j]
+        
+#     while min_size < 512:
+#         idx_batch = [[] for _ in range(total_edge)]
+#         # for each class in the dataset
+#         for k in range(output_class_num):
+#             idx_k = np.where(train_label_temp == k)[0]
+#             np.random.shuffle(idx_k)
+#             proportions = np.random.dirichlet(np.repeat(1, total_edge))
+#             ## Balance
+#             proportions = np.array([p*(len(idx_j)<N/total_edge) for p,idx_j in zip(proportions,idx_batch)])
+#             proportions = proportions/proportions.sum()
+#             proportions = (np.cumsum(proportions)*len(idx_k)).astype(int)[:-1]
+#             idx_batch = [idx_j + idx.tolist() for idx_j,idx in zip(idx_batch,np.split(idx_k,proportions))]
+#             min_size = min([len(idx_j) for idx_j in idx_batch])
+
+#     for j in range(total_edge):
+#         np.random.shuffle(idx_batch[j])
+#         data_idx_map[j] = idx_batch[j]
+
+#     _, net_data_count = record_net_data_stats(train_label_temp, data_idx_map)
+
+#     return CanDataset(csv, train_datum), data_idx_map, net_data_count, CanDataset(csv, test_datum, False)
+
+
+# class CanDataset(Dataset):
+
+#     def __init__(self, csv, datum, is_train=True):
+#         self.csv = csv
+#         self.datum = datum
+#         self.is_train = is_train
+#         if self.is_train:
+#           self.idx_map = []
+#         else:
+#           self.idx_map = [idx for idx in range(len(self.datum))]
+
+#     def __len__(self):
+#         return len(self.idx_map)
+
+#     def set_idx_map(self, data_idx_map):
+#         self.idx_map = data_idx_map
+
+#     def __getitem__(self, idx):
+#         start_i = self.datum[self.idx_map[idx]][0]
+#         if self.is_train:
+#             is_regular = self.datum[self.idx_map[idx]][1]
+#             l = np.zeros((const.CAN_FRAME_LEN, const.CAN_DATA_LEN))
+#             '''
+#                 각 바이트 값은 모두 normalized 된다.
+#                 0 ~ 255 -> 0.0 ~ 1.0
+#             '''
+#             for i in range(const.CAN_FRAME_LEN):
+#                 data_len = self.csv.iloc[start_i + i, 1]
+#                 for j in range(data_len):
+#                     k = int(self.csv.iloc[start_i + i, 2 + j], 16) / 255.0
+#                     l[i][j] = k
+#             l = np.reshape(l, (1, const.CAN_FRAME_LEN, const.CAN_DATA_LEN))
+#         else:
+#             l = np.zeros((const.CAN_DATA_LEN))
+#             data_len = self.csv.iloc[start_i, 1]
+#             is_regular = self.csv.iloc[start_i, data_len + 2] == 'R'
+#             if is_regular:
+#                 is_regular = 1
+#             else:
+#                 is_regular = 0
+#             for j in range(data_len):
+#                 k = int(self.csv.iloc[start_i, 2 + j], 16) / 255.0
+#                 l[j] = k
+#             l = np.reshape(l, (1, const.CAN_DATA_LEN))
+
+#         return (l, is_regular)
 
 
 def record_net_data_stats(label_temp, data_idx_map):

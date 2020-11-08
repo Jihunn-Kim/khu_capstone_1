@@ -3,6 +3,7 @@ import argparse
 import time
 import math
 import numpy as np
+import os
 from collections import OrderedDict
 import torch
 import torch.optim as optim
@@ -47,6 +48,9 @@ def start_fedavg(fed_model, args,
                           edges,
                           device):
     print("start fed avg")
+    weight_path = './weights'
+    os.makedirs(weight_path, exist_ok=True)
+
     criterion = nn.CrossEntropyLoss()
     C = 0.1
     num_edge = int(max(C * args.n_nets, 1))
@@ -64,8 +68,9 @@ def start_fedavg(fed_model, args,
 
         for edge_progress, edge_index in enumerate(selected_edge):
             train_data_set.set_idx_map(data_idx_map[edge_index])
-            train_loader = torch.utils.data.DataLoader(train_data_set, batch_size=args.batch_size,
-                                                    shuffle=True, num_workers=2)
+            sampler = dataset.BatchIntervalSampler(len(train_data_set), args.batch_size)
+            train_loader = torch.utils.data.DataLoader(train_data_set, batch_size=args.batch_size, sampler=sampler,
+                                                    shuffle=False, num_workers=2, drop_last=True)
             print("[%2d/%2d] edge: %d, data len: %d" % (edge_progress, len(selected_edge), edge_index, len(train_data_set)))
 
             edges[edge_index] = copy.deepcopy(fed_model)
@@ -73,20 +78,18 @@ def start_fedavg(fed_model, args,
             edges[edge_index].train()
             edge_opt = optim.Adam(params=edges[edge_index].parameters(), lr=args.lr)
             # train
-            l = 4
+            packet_state = torch.zeros(args.batch_size, 1, model.STATE_DIM).to(device)
+            # packet_state = torch.zeros(1, 1, model.STATE_DIM).to(device)
             for data_idx, (inputs, labels) in enumerate(train_loader):
-                if inputs.size(0) != args.batch_size: # ignore last inputs, for concat
-                    break
-
+                # if inputs.size(0) != args.batch_size: # ignore last inputs, for concat
+                #     break
+                # return
                 inputs, labels = inputs.float().to(device), labels.long().to(device)
 
-                s = torch.zeros(args.batch_size, 1, model.STATE_DIM).to(device)
-                for j in range(l - 1):
-                    s = edges[edge_index].forward_state(inputs[:,:,j,:], s)
-                edge_pred = edges[edge_index](inputs[:,:,l-1,:], s)
+                edge_pred, packet_state = edges[edge_index](inputs, packet_state)
+                packet_state = torch.autograd.Variable(packet_state, requires_grad=False)
 
                 edge_opt.zero_grad()
-                # edge_pred = edges[edge_index](inputs)
 
                 edge_loss = criterion(edge_pred, labels)
                 edge_loss.backward()
@@ -110,27 +113,24 @@ def start_fedavg(fed_model, args,
 
         fed_model.load_state_dict(update_state)
         if cr % 10 == 0:
+            # test
             fed_model.to(device)
             fed_model.eval()
 
             total_loss = 0.0
             cnt = 0
             step_acc = 0.0
-            is_first = l
             with torch.no_grad():
-                s = torch.zeros(args.batch_size, 1, model.STATE_DIM).to(device)
+                packet_state = torch.zeros(args.batch_size, 1, model.STATE_DIM).to(device)
+                # packet_state = torch.zeros(1, 1, model.STATE_DIM).to(device)
                 for i, (inputs, labels) in enumerate(testloader):
-                    if inputs.size(0) != args.batch_size: # ignore last inputs, for concat
-                        break
+                    # if inputs.size(0) != args.batch_size: # ignore last inputs, for concat
+                    #   break
 
                     inputs, labels = inputs.float().to(device), labels.long().to(device)
-                    if is_first > 0:
-                        s = fed_model.forward_state(inputs, s)
-                        is_first -= 1
-                        continue
                     
-                    outputs = fed_model(inputs, s)
-                    s = fed_model.forward_state(inputs, s) # for next state
+                    outputs, packet_state = fed_model(inputs, packet_state)
+                    packet_state = torch.autograd.Variable(packet_state, requires_grad=False)
 
                     # outputs = fed_model(inputs)
                     _, preds = torch.max(outputs, 1)
@@ -145,9 +145,11 @@ def start_fedavg(fed_model, args,
                     if i % 200 == 0:
                       print('test [%4d] loss: %.3f' % (i, loss.item()))
                       # break
-            print('acc', (step_acc / cnt).item())
+            fed_accuracy = (step_acc / cnt).item()
+            print('acc', fed_accuracy)
             print(total_loss / cnt)
             fed_model.to('cpu')
+            torch.save(fed_model.state_dict(), os.path.join(weight_path, 'fed_avg_%d_%.4f.pth' % (cr, fed_accuracy)))
 
 
 def start_fedprox(fed_model, args,
@@ -521,9 +523,13 @@ def start_train():
     # kwargs = {"./dataset/DoS_dataset.csv" : './DoS_dataset.txt'}
     # train_data_set, data_idx_map, net_data_count, test_data_set = dataset.GetCanDatasetUsingTxtKwarg(args.n_nets, args.fold_num, **kwargs)
     # train_data_set, data_idx_map, net_data_count, test_data_set = dataset.GetCanDataset(args.n_nets, args.fold_num, "./dataset/Mixed_dataset.csv", "./dataset/Mixed_dataset.txt")
-    train_data_set, data_idx_map, net_data_count, test_data_set = dataset.GetCanDataset(args.n_nets, args.fold_num, "./dataset/Mixed_dataset.csv", "./dataset/Mixed_dataset_4.txt")
-    testloader = torch.utils.data.DataLoader(test_data_set, batch_size=args.batch_size,
-                                            shuffle=False, num_workers=2)
+    train_data_set, data_idx_map, net_data_count, test_data_set = dataset.GetCanDataset(args.n_nets, args.fold_num, "./dataset/Mixed_dataset.csv", "./dataset/Mixed_dataset_1.txt")
+    
+    sampler = dataset.BatchIntervalSampler(len(test_data_set), args.batch_size)
+    testloader = torch.utils.data.DataLoader(test_data_set, batch_size=args.batch_size, sampler=sampler,
+                                            shuffle=False, num_workers=2, drop_last=True)
+    # testloader = torch.utils.data.DataLoader(test_data_set, batch_size=args.batch_size,
+    #                                         shuffle=False, num_workers=2)
 
     fed_model = model.OneNet()
     args.comm_type = 'fedavg'
