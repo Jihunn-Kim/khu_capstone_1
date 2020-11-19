@@ -31,18 +31,63 @@ class Net(nn.Module):
         return x
 
 
-IN_DIM      = 1     # byte
-STATE_DIM   = 16
-FEATURE_DIM = 16
+# IN_DIM      = 1     # byte
+# STATE_DIM   = 16
+# FEATURE_DIM = 16
+# class OneNet(nn.Module):
+#     def __init__(self):
+#         super(OneNet, self).__init__()
+        
+#         # transform the given packet into a tensor which is in a good feature space
+#         self.feature_layer = nn.Sequential(
+#             nn.Linear(8, 8),
+#             nn.ReLU(),
+#             nn.Linear(8, FEATURE_DIM),
+#             nn.ReLU()
+#         )
+
+#         # generates the current state 's'
+#         self.f = nn.Sequential(
+#             nn.Linear(STATE_DIM + FEATURE_DIM, STATE_DIM),
+#             nn.ReLU(),
+#             nn.Linear(STATE_DIM, STATE_DIM),
+#             nn.ReLU()
+#         )
+
+#         # check whether the given packet is malicious
+#         self.g = nn.Sequential(
+#             nn.Linear(STATE_DIM + FEATURE_DIM, 32),
+#             nn.ReLU(),
+#             nn.Linear(32, 16),
+#             nn.ReLU(),
+#             nn.Linear(16, 2),
+#             nn.Flatten()
+#         )
+
+#     def forward_state(self, x, s):
+#         x   = self.feature_layer(x)
+#         x   = torch.cat((x, s), 2)
+#         s2 = self.f(x)
+#         return s2
+    
+#     def forward(self, x, s):
+#         x   = self.feature_layer(x)
+#         x   = torch.cat((x, s), 2)
+#         x2 = self.g(x)
+#         return x2
+
+IN_DIM      = 8     # byte
+STATE_DIM   = 8*32
+FEATURE_DIM = 32
 class OneNet(nn.Module):
     def __init__(self):
         super(OneNet, self).__init__()
         
         # transform the given packet into a tensor which is in a good feature space
         self.feature_layer = nn.Sequential(
-            nn.Linear(8, 8),
+            nn.Linear(IN_DIM, 32),
             nn.ReLU(),
-            nn.Linear(8, FEATURE_DIM),
+            nn.Linear(32, FEATURE_DIM),
             nn.ReLU()
         )
 
@@ -56,22 +101,22 @@ class OneNet(nn.Module):
 
         # check whether the given packet is malicious
         self.g = nn.Sequential(
-            nn.Linear(STATE_DIM + FEATURE_DIM, 32),
+            nn.Linear(STATE_DIM + FEATURE_DIM, 64),
             nn.ReLU(),
-            nn.Linear(32, 16),
+            nn.Linear(64, 64),
             nn.ReLU(),
-            nn.Linear(16, 2),
-            nn.Flatten()
+            nn.Linear(64, 2),
+            # nn.Flatten()
         )
 
-    def forward_state(self, x, s):
-        x   = self.feature_layer(x)
-        x   = torch.cat((x, s), 2)
-        s2 = self.f(x)
-        return s2
-    
     def forward(self, x, s):
         x   = self.feature_layer(x)
-        x   = torch.cat((x, s), 2)
-        x2 = self.g(x)
-        return x2
+        # print(x.shape)
+        x   = torch.cat((x, s), 1)
+
+        s2  = self.f(x)
+        # print(x.shape)
+        x2  = self.g(x)
+        # print(x2.shape)
+
+        return x2, s2

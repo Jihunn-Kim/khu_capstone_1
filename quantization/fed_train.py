@@ -53,7 +53,7 @@ def start_fedavg(fed_model, args,
     # quantize
     # fed_model.eval()
     # torch.jit.save(torch.jit.script(fed_model), './float.pth')
-    # return
+    
     fed_model.fuse_model()
     # modules_to_fuse = [['conv1', 'relu1'], ['conv2', 'relu2'], ['conv3', 'relu3']]
     # torch.quantization.fuse_modules(fed_model, modules_to_fuse, inplace=True)

@@ -71,10 +71,6 @@ def init_models(n_nets, args):
     layer_type = []
 
     for idx in range(n_nets):
-        # if args.model == "lenet":
-        #     cnn = LeNet()
-        # elif args.model == "vgg":
-        #     cnn = vgg11()
         models.append(model.Net())
 
     for (k, v) in models[0].state_dict().items():
