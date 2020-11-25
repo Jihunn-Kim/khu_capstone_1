@@ -13,31 +13,89 @@ import model
 import utils
 import dataset
 
+# for google colab reload
 import importlib
 importlib.reload(model)
 importlib.reload(utils)
 importlib.reload(dataset)
 
 
+## paramter
+
+# shared
+criterion = nn.CrossEntropyLoss()
+C = 0.1
+#
+
+# prox
+mu = 0.001
+#
+
+# time weight
+twa_exp = 1.1
+#
+
+# dynamic weight
+H = 0.5
+P = 0.1
+G = 0.1
+R = 0.1
+alpha, beta, gamma = 40.0/100.0, 40.0/100.0, 20.0/100.0
+#
+
+## end
+
+
 def add_args(parser):
-    # parser.add_argument('--model', type=str, default='moderate-cnn',
-    #                     help='neural network used in training')
-    # parser.add_argument('--dataset', type=str, default='cifar10', metavar='N',
-    #                     help='dataset used for training')
+    parser.add_argument('--packet_num', type=int, default=1,
+                        help='packet number used in training, 1 ~ 3')
+    parser.add_argument('--dataset', type=str, default='can',
+                        help='dataset used for training, can or syncan')
     parser.add_argument('--fold_num', type=int, default=0, 
                         help='5-fold, 0 ~ 4')
-    parser.add_argument('--batch_size', type=int, default=128, metavar='N',
+    parser.add_argument('--batch_size', type=int, default=128,
                         help='input batch size for training')
-    parser.add_argument('--lr', type=float, default=0.001, metavar='LR',
+    parser.add_argument('--lr', type=float, default=0.001,
                         help='learning rate')
-    parser.add_argument('--n_nets', type=int, default=100, metavar='NN',
+    parser.add_argument('--n_nets', type=int, default=100,
                         help='number of workers in a distributed cluster')
-    parser.add_argument('--comm_type', type=str, default='fedtwa', 
-                            help='which type of communication strategy is going to be used: layerwise/blockwise')    
+    parser.add_argument('--comm_type', type=str, default='fedprox', 
+                            help='which type of communication strategy is going to be used')    
     parser.add_argument('--comm_round', type=int, default=50, 
                             help='how many round of communications we shoud use')
+    parser.add_argument('--weight_save_path', type=str, default='./weights', 
+                            help='model weight save path')
     args = parser.parse_args(args=[])
     return args
+
+
+def test_model(fed_model, args, testloader, device):
+    fed_model.to(device)
+    fed_model.eval()
+
+    cnt = 0
+    step_acc = 0.0
+    with torch.no_grad():
+        packet_state = torch.zeros(args.batch_size, model.STATE_DIM).to(device)
+        for i, (inputs, labels) in enumerate(testloader):
+            inputs, labels = inputs.to(device), labels.to(device)
+            
+            outputs, packet_state = fed_model(inputs, packet_state)
+            packet_state = torch.autograd.Variable(packet_state, requires_grad=False)
+
+            _, preds = torch.max(outputs, 1)
+
+            cnt += inputs.shape[0]
+            corr_sum = torch.sum(preds == labels.data)
+            step_acc += corr_sum.double()
+            if i % 200 == 0:
+                print('test [%4d/%4d] acc: %.3f' % (i, len(testloader), (step_acc / cnt).item()))
+                # break
+    fed_accuracy = (step_acc / cnt).item()
+    print('test acc', fed_accuracy)
+    fed_model.to('cpu')
+    fed_model.train()
+    torch.save(fed_model.state_dict(), os.path.join(args.weight_save_path, '%s_%d_%.4f.pth' % (args.comm_type, cr, fed_accuracy)))
 
 
 def start_fedavg(fed_model, args,
@@ -48,11 +106,7 @@ def start_fedavg(fed_model, args,
                           edges,
                           device):
     print("start fed avg")
-    weight_path = './weights'
-    os.makedirs(weight_path, exist_ok=True)
 
-    criterion = nn.CrossEntropyLoss()
-    C = 0.1
     num_edge = int(max(C * args.n_nets, 1))
     total_data_count = 0
     for _, data_count in net_data_count.items():
@@ -77,14 +131,11 @@ def start_fedavg(fed_model, args,
             edges[edge_index].to(device)
             edges[edge_index].train()
             edge_opt = optim.Adam(params=edges[edge_index].parameters(), lr=args.lr)
+
             # train
-            packet_state = torch.zeros(args.batch_size, 1, model.STATE_DIM).to(device)
-            # packet_state = torch.zeros(1, 1, model.STATE_DIM).to(device)
+            packet_state = torch.zeros(args.batch_size, model.STATE_DIM).to(device)
             for data_idx, (inputs, labels) in enumerate(train_loader):
-                # if inputs.size(0) != args.batch_size: # ignore last inputs, for concat
-                #     break
-                # return
-                inputs, labels = inputs.float().to(device), labels.long().to(device)
+                inputs, labels = inputs.to(device), labels.to(device)
 
                 edge_pred, packet_state = edges[edge_index](inputs, packet_state)
                 packet_state = torch.autograd.Variable(packet_state, requires_grad=False)
@@ -113,44 +164,7 @@ def start_fedavg(fed_model, args,
         
         fed_model.load_state_dict(update_state)
         if cr % 10 == 0:
-            # test
-            fed_model.to(device)
-            fed_model.eval()
-
-            total_loss = 0.0
-            cnt = 0
-            step_acc = 0.0
-            with torch.no_grad():
-                packet_state = torch.zeros(args.batch_size, 1, model.STATE_DIM).to(device)
-                # packet_state = torch.zeros(1, 1, model.STATE_DIM).to(device)
-                for i, (inputs, labels) in enumerate(testloader):
-                    # if inputs.size(0) != args.batch_size: # ignore last inputs, for concat
-                    #   break
-
-                    inputs, labels = inputs.float().to(device), labels.long().to(device)
-                    
-                    outputs, packet_state = fed_model(inputs, packet_state)
-                    packet_state = torch.autograd.Variable(packet_state, requires_grad=False)
-
-                    # outputs = fed_model(inputs)
-                    _, preds = torch.max(outputs, 1)
-
-                    loss = criterion(outputs, labels)
-                    cnt += inputs.shape[0]
-
-                    corr_sum = torch.sum(preds == labels.data)
-                    step_acc += corr_sum.double()
-                    running_loss = loss.item() * inputs.shape[0]
-                    total_loss += running_loss
-                    if i % 200 == 0:
-                      print('test [%4d] loss: %.3f' % (i, loss.item()))
-                      # break
-            fed_accuracy = (step_acc / cnt).item()
-            print('acc', fed_accuracy)
-            print(total_loss / cnt)
-            fed_model.to('cpu')
-            fed_model.train()
-            torch.save(fed_model.state_dict(), os.path.join(weight_path, 'fed_avg_%d_%.4f.pth' % (cr, fed_accuracy)))
+            test_model(fed_model, args, testloader, device)
 
 
 def start_fedprox(fed_model, args,
@@ -159,12 +173,7 @@ def start_fedprox(fed_model, args,
                           testloader,
                           device):
     print("start fed prox")
-    weight_path = './weights'
-    os.makedirs(weight_path, exist_ok=True)
 
-    criterion = nn.CrossEntropyLoss()
-    mu = 0.001
-    C = 0.1
     num_edge = int(max(C * args.n_nets, 1))
     fed_model.to(device)
 
@@ -192,9 +201,9 @@ def start_fedprox(fed_model, args,
             edge_model.train()
             edge_opt = optim.Adam(params=edge_model.parameters(),lr=args.lr)
             # train
-            packet_state = torch.zeros(args.batch_size, 1, model.STATE_DIM).to(device)
+            packet_state = torch.zeros(args.batch_size, model.STATE_DIM).to(device)
             for data_idx, (inputs, labels) in enumerate(train_loader):
-                inputs, labels = inputs.float().to(device), labels.long().to(device)
+                inputs, labels = inputs.to(device), labels.to(device)
 
                 edge_pred, packet_state = edge_model(inputs, packet_state)
                 packet_state = torch.autograd.Variable(packet_state, requires_grad=False)
@@ -228,38 +237,9 @@ def start_fedprox(fed_model, args,
         fed_model.to(device)
 
         if cr % 10 == 0:
-            # test
-            fed_model.eval()
-            total_loss = 0.0
-            cnt = 0
-            step_acc = 0.0
-            with torch.no_grad():
-                packet_state = torch.zeros(args.batch_size, 1, model.STATE_DIM).to(device)
-                for i, (inputs, labels) in enumerate(testloader):
-                    inputs, labels = inputs.float().to(device), labels.long().to(device)
-                    
-                    outputs, packet_state = fed_model(inputs, packet_state)
-                    packet_state = torch.autograd.Variable(packet_state, requires_grad=False)
-
-                    _, preds = torch.max(outputs, 1)
-
-                    loss = criterion(outputs, labels)
-                    cnt += inputs.shape[0]
-
-                    corr_sum = torch.sum(preds == labels.data)
-                    step_acc += corr_sum.double()
-                    running_loss = loss.item() * inputs.shape[0]
-                    total_loss += running_loss
-                    if i % 200 == 0:
-                      print('test [%4d] loss: %.3f' % (i, loss.item()))
-                      # break
-            fed_accuracy = (step_acc / cnt).item()
-            print('acc', fed_accuracy)
-            print(total_loss / cnt)
-            fed_model.train()
-            fed_model.to('cpu')
-            torch.save(fed_model.state_dict(), os.path.join(weight_path, 'fed_prox_%d_%.4f.pth' % (cr, fed_accuracy)))
+            test_model(fed_model, args, testloader, device)
             fed_model.to(device)
+
 
 def start_fedtwa(fed_model, args,
                           train_data_set,
@@ -270,15 +250,8 @@ def start_fedtwa(fed_model, args,
                           device):
     # TEFL, without asynchronous model update
     print("start fed temporally weighted aggregation")
-    weight_path = './weights'
-    os.makedirs(weight_path, exist_ok=True)
 
-    criterion = nn.CrossEntropyLoss()
     time_stamp = [0 for worker in range(args.n_nets)]
-    # twa_exp = math.e / 2.0
-    twa_exp = 1.1
-    print(twa_exp)
-    C = 0.1
     num_edge = int(max(C * args.n_nets, 1))
     total_data_count = 0
     for _, data_count in net_data_count.items():
@@ -304,6 +277,7 @@ def start_fedtwa(fed_model, args,
             edges[edge_index].to(device)
             edges[edge_index].train()
             edge_opt = optim.Adam(params=edges[edge_index].parameters(), lr=args.lr)
+
             # train
             packet_state = torch.zeros(args.batch_size, model.STATE_DIM).to(device)
             for data_idx, (inputs, labels) in enumerate(train_loader):
@@ -325,7 +299,7 @@ def start_fedtwa(fed_model, args,
             edges[edge_index].to('cpu')
 
         # cal weight using time stamp
-        # sum_timeStamp = time_stamp[k]
+        # in paper, cr - time_stamp[k] used, but error is high
         update_state = OrderedDict()
         for k, edge in enumerate(edges):
             local_state = edge.state_dict()
@@ -337,39 +311,7 @@ def start_fedtwa(fed_model, args,
 
         fed_model.load_state_dict(update_state)
         if cr % 10 == 0:
-            # test
-            fed_model.to(device)
-            fed_model.eval()
-
-            total_loss = 0.0
-            cnt = 0
-            step_acc = 0.0
-            with torch.no_grad():
-                packet_state = torch.zeros(args.batch_size, model.STATE_DIM).to(device)
-                for i, (inputs, labels) in enumerate(testloader):
-                    inputs, labels = inputs.float().to(device), labels.long().to(device)
-
-                    outputs, packet_state = fed_model(inputs, packet_state)
-                    packet_state = torch.autograd.Variable(packet_state, requires_grad=False)
-
-                    _, preds = torch.max(outputs, 1)
-
-                    loss = criterion(outputs, labels)
-                    cnt += inputs.shape[0]
-
-                    corr_sum = torch.sum(preds == labels.data)
-                    step_acc += corr_sum.double()
-                    running_loss = loss.item() * inputs.shape[0]
-                    total_loss += running_loss
-                    if i % 200 == 0:
-                      print('test [%4d] loss: %.3f' % (i, loss.item()))
-                      # break
-            fed_accuracy = (step_acc / cnt).item()
-            print('acc', fed_accuracy)
-            print(total_loss / cnt)
-            fed_model.to('cpu')
-            fed_model.train()
-            torch.save(fed_model.state_dict(), os.path.join(weight_path, 'fed_time_%d_%.4f.pth' % (cr, fed_accuracy)))
+            test_model(fed_model, args, testloader, device)
 
 
 def start_feddw(fed_model, args,
@@ -381,16 +323,8 @@ def start_feddw(fed_model, args,
                           edges,
                           device):
     print("start fed Node-aware Dynamic Weighting")
-    weight_path = './weights'
-    os.makedirs(weight_path, exist_ok=True)
 
     worker_selected_frequency = [0 for worker in range(args.n_nets)]
-    criterion = nn.CrossEntropyLoss()
-    H = 0.5
-    P = 0.1
-    G = 0.1
-    R = 0.1
-    alpha, beta, gamma = 40.0/100.0, 40.0/100.0, 20.0/100.0
     num_edge = int(max(G * args.n_nets, 1))
     
     # cal data weight for selecting participants
@@ -432,10 +366,8 @@ def start_feddw(fed_model, args,
         # weighted frequency
         avg_selected_frequency = sum(worker_selected_frequency) / len(worker_selected_frequency)
         weighted_frequency = [P * (avg_selected_frequency - worker_frequency) for worker_frequency in worker_selected_frequency]
-        # print(weighted_frequency)
         frequency_prime = min(weighted_frequency)
         weighted_frequency = [frequency + frequency_prime + 1 for frequency in weighted_frequency]
-        # print(weighted_frequency)
         # end weigthed
 
         print("selected edge", selected_edge)
@@ -451,15 +383,15 @@ def start_feddw(fed_model, args,
             edges[edge_index].to(device)
             edges[edge_index].train()
             edge_opt = optim.Adam(params=edges[edge_index].parameters(), lr=args.lr)
+
             # train
-            # packet_state = torch.zeros(args.batch_size, 1, model.STATE_DIM).to(device)
             packet_state = torch.zeros(args.batch_size, model.STATE_DIM).to(device)
             for data_idx, (inputs, labels) in enumerate(train_loader):
                 inputs, labels = inputs.float().to(device), labels.long().to(device)
 
                 edge_pred, packet_state = edges[edge_index](inputs, packet_state)
                 packet_state = torch.autograd.Variable(packet_state, requires_grad=False)
-                # return
+
                 edge_opt.zero_grad()
 
                 edge_loss = criterion(edge_pred, labels)
@@ -473,7 +405,7 @@ def start_feddw(fed_model, args,
 
             # get edge accuracy using subset of testset
             edges[edge_index].eval()
-            print("[%2d/%2d] edge: %d, cal accuracy" % (edge_progress, len(selected_edge), edge_index))
+            print("[%2d/%2d] edge: %d, cal local accuracy" % (edge_progress, len(selected_edge), edge_index))
             cnt = 0
             step_acc = 0.0
             with torch.no_grad():
@@ -494,7 +426,7 @@ def start_feddw(fed_model, args,
                   # break
 
             worker_local_accuracy[edge_index] = (step_acc / cnt).item()
-            print(worker_local_accuracy[edge_index])
+            print('edge local accuracy', worker_local_accuracy[edge_index])
             edges[edge_index].to('cpu')
 
         # cal weight dynamically
@@ -505,7 +437,6 @@ def start_feddw(fed_model, args,
             local_state = edge.state_dict()
             for key in fed_model.state_dict().keys():
                 if k == 0:
-                    # print(key, local_state[key])
                     update_state[key] = local_state[key] \
                     * (net_data_count[k] * alpha \
                     + worker_local_accuracy[k] / sum_accuracy * beta \
@@ -515,73 +446,126 @@ def start_feddw(fed_model, args,
                     * (net_data_count[k] * alpha \
                     + worker_local_accuracy[k] / sum_accuracy * beta \
                     + weighted_frequency[k] / sum_weighted_frequency * gamma)
-        # return
+
         fed_model.load_state_dict(update_state)
         if cr % 10 == 0:
-          fed_model.to(device)
-          fed_model.eval()
+          test_model(fed_model, args, testloader, device)
 
-          total_loss = 0.0
-          cnt = 0
-          step_acc = 0.0
-          with torch.no_grad():
-              packet_state = torch.zeros(args.batch_size, model.STATE_DIM).to(device)
-              for i, (inputs, labels) in enumerate(testloader):
-                  inputs, labels = inputs.float().to(device), labels.long().to(device)
 
-                  outputs, packet_state = fed_model(inputs, packet_state)
-                  packet_state = torch.autograd.Variable(packet_state, requires_grad=False)
+def start_only_edge(args,
+                          train_data_set,
+                          data_idx_map,
+                          testloader,
+                          edges,
+                          device):
+    print("start only edge")
+    total_epoch = int(args.comm_round * C)
 
-                  _, preds = torch.max(outputs, 1)
+    for cr in range(1, total_epoch + 1):
+        print("Edge round : %d" % (cr))
+        edge_accuracy_list = []
 
-                  loss = criterion(outputs, labels)
-                  cnt += inputs.shape[0]
+        for edge_index, edge_model in enumerate(edges):
+            train_data_set.set_idx_map(data_idx_map[edge_index])
+            sampler = dataset.BatchIntervalSampler(len(train_data_set), args.batch_size)
+            train_loader = torch.utils.data.DataLoader(train_data_set, batch_size=args.batch_size, sampler=sampler,
+                                                    shuffle=False, num_workers=2, drop_last=True)
+            print("edge[%2d/%2d] data len: %d" % (edge_index, len(edges), len(train_data_set)))
 
-                  corr_sum = torch.sum(preds == labels.data)
-                  step_acc += corr_sum.double()
-                  running_loss = loss.item() * inputs.shape[0]
-                  total_loss += running_loss
-                  if i % 200 == 0:
-                    print('test [%4d] loss: %.3f' % (i, loss.item()))
+            edge_model.to(device)
+            edge_model.train()
+            edge_opt = optim.Adam(params=edge_model.parameters(),lr=args.lr)
+
+            # train
+            packet_state = torch.zeros(args.batch_size, model.STATE_DIM).to(device)
+            for data_idx, (inputs, labels) in enumerate(train_loader):
+                inputs, labels = inputs.float().to(device), labels.long().to(device)
+
+                edge_pred, packet_state = edge_model(inputs, packet_state)
+                packet_state = torch.autograd.Variable(packet_state, requires_grad=False)
+
+                edge_opt.zero_grad()
+
+                edge_loss = criterion(edge_pred, labels)
+                edge_loss.backward()
+
+                edge_opt.step()
+                edge_loss = edge_loss.item()
+                if data_idx % 100 == 0:
+                    print('[%4d] loss: %.3f' % (data_idx, edge_loss))
                     # break
-          fed_accuracy = (step_acc / cnt).item()
-          print('acc', fed_accuracy)
-          print(total_loss / cnt)
-          fed_model.to('cpu')
-          torch.save(fed_model.state_dict(), os.path.join(weight_path, 'fed_dw_%d_%.4f.pth' % (cr, fed_accuracy)))
+
+            # test
+            # if cr < 4:
+            #     continue
+            edge_model.eval()
+            total_loss = 0.0
+            cnt = 0
+            step_acc = 0.0
+            with torch.no_grad():
+                packet_state = torch.zeros(args.batch_size, model.STATE_DIM).to(device)
+                for i, (inputs, labels) in enumerate(testloader):
+                    inputs, labels = inputs.float().to(device), labels.long().to(device)
+                    
+                    outputs, packet_state = edge_model(inputs, packet_state)
+                    packet_state = torch.autograd.Variable(packet_state, requires_grad=False)
+
+                    _, preds = torch.max(outputs, 1)
+
+                    loss = criterion(outputs, labels)
+                    cnt += inputs.shape[0]
+
+                    corr_sum = torch.sum(preds == labels.data)
+                    step_acc += corr_sum.double()
+                    running_loss = loss.item() * inputs.shape[0]
+                    total_loss += running_loss
+                    if i % 200 == 0:
+                      print('test [%4d] loss: %.3f' % (i, loss.item()))
+                      # break
+            edge_accuracy = (step_acc / cnt).item()
+            edge_accuracy_list.append(edge_accuracy)
+            print("edge[%2d/%2d] acc: %.4f" % (edge_index, len(edges), edge_accuracy))
+            edge_model.to('cpu')
+
+        # if cr < 4:
+        #     continue
+        edge_accuracy_avg = sum(edge_accuracy_list) / len(edge_accuracy_list)
+        torch.save(edges[0].state_dict(), os.path.join(weight_path, 'edge_%d_%.4f.pth' % (cr, edge_accuracy_avg)))
 
 
 
 def start_train():
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-    print(device)
+    print('device:', device)
+
     args = add_args(argparse.ArgumentParser())
 
+    # make weight folder
+    os.makedirs(args.weight_save_path, exist_ok=True)
+
+    # for reproductivity
     seed = 0
     np.random.seed(seed)
     torch.manual_seed(seed)
 
     print("Loading data...")
-    # kwargs = {"./dataset/DoS_dataset.csv" : './DoS_dataset.txt',
-    #         "./dataset/Fuzzy_dataset.csv" : './Fuzzy_dataset.txt',
-    #         "./dataset/RPM_dataset.csv" : './RPM_dataset.txt',
-    #         "./dataset/gear_dataset.csv" : './gear_dataset.txt'
-    # }
-    # kwargs = {"./dataset/DoS_dataset.csv" : './DoS_dataset.txt'}
-    # train_data_set, data_idx_map, net_data_count, test_data_set = dataset.GetCanDatasetUsingTxtKwarg(args.n_nets, args.fold_num, **kwargs)
-    # train_data_set, data_idx_map, net_data_count, test_data_set = dataset.GetCanDataset(args.n_nets, args.fold_num, "./dataset/Mixed_dataset.csv", "./dataset/Mixed_dataset.txt")
-    train_data_set, data_idx_map, net_data_count, test_data_set = dataset.GetCanDataset(args.n_nets, args.fold_num, "./dataset/Mixed_dataset.csv", "./dataset/Mixed_dataset_1.txt")
+    if args.dataset == 'can':
+        train_data_set, data_idx_map, net_data_count, test_data_set = dataset.GetCanDataset(args.n_nets, args.fold_num, args.packet_num, "./dataset/Mixed_dataset.csv", "./dataset/Mixed_dataset_1.txt")
+    elif args.dataset == 'syncan':
+        train_data_set, data_idx_map, net_data_count, test_data_set = dataset.GetCanDataset(args.n_nets, args.fold_num, args.packet_num, "./dataset/test_mixed.csv", "./dataset/Mixed_dataset_1.txt")
     
     sampler = dataset.BatchIntervalSampler(len(test_data_set), args.batch_size)
     testloader = torch.utils.data.DataLoader(test_data_set, batch_size=args.batch_size, sampler=sampler,
                                             shuffle=False, num_workers=2, drop_last=True)
-    # testloader = torch.utils.data.DataLoader(test_data_set, batch_size=args.batch_size,
-    #                                         shuffle=False, num_workers=2)
 
-    fed_model = model.OneNet()
-    args.comm_type = 'fedtwa'
+    if args.dataset == 'can':
+        fed_model = model.OneNet(args.packet_num)
+        edges = [model.OneNet(args.packet_num) for _ in range(args.n_nets)]
+    elif args.dataset == 'syncan':
+        fed_model = model.OneNet(args.packet_num)
+        edges = [model.OneNet(args.packet_num) for _ in range(args.n_nets)]
+
     if args.comm_type == "fedavg":
-        edges = [model.OneNet() for edge_cnt in range(args.n_nets)]
         start_fedavg(fed_model, args,
                             train_data_set,
                             data_idx_map,
@@ -596,7 +580,6 @@ def start_train():
                             testloader,
                             device)
     elif args.comm_type == "fedtwa":
-        edges = [model.OneNet() for edge_cnt in range(args.n_nets)]
         start_fedtwa(fed_model, args,
                             train_data_set,
                             data_idx_map,
@@ -608,20 +591,25 @@ def start_train():
         local_test_set = copy.deepcopy(test_data_set)
         # in paper, mnist train 60,000 / test 10,000 / 1,000 - 10%
         # CAN train ~ 1,400,000 / test 300,000 / for speed 15,000 - 5%
-        # local_test_idx = np.random.choice(len(local_test_set), len(local_test_set) // 10, replace=False)
         local_test_idx = [idx for idx in range(0, len(local_test_set) // 20)]
         local_test_set.set_idx_map(local_test_idx)
         sampler = dataset.BatchIntervalSampler(len(local_test_set), args.batch_size)
         local_test_loader = torch.utils.data.DataLoader(local_test_set, batch_size=args.batch_size, sampler=sampler,
                                                 shuffle=False, num_workers=2, drop_last=True)
 
-        edges = [model.OneNet() for edge_cnt in range(args.n_nets)]
         start_feddw(fed_model, args,
                             train_data_set,
                             data_idx_map,
                             net_data_count,
                             testloader,
                             local_test_loader,
+                            edges,
+                            device)
+    elif args.comm_type == "edge":
+        start_only_edge(args,
+                            train_data_set,
+                            data_idx_map,
+                            testloader,
                             edges,
                             device)
 
