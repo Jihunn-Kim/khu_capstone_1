@@ -108,7 +108,7 @@ class CanDataset(Dataset):
           self.idx_map = [idx for idx in range(len(self.datum))]
 
     def __len__(self):
-        return len(self.idx_map)
+        return len(self.idx_map) - self.packet_num + 1
 
     def set_idx_map(self, data_idx_map):
         self.idx_map = data_idx_map
@@ -126,7 +126,7 @@ class CanDataset(Dataset):
                 data_value = int(self.csv.iloc[start_i + next_i, 2 + j], 16) / 255.0
                 packet[j + const.CAN_DATA_LEN * next_i] = data_value
 
-        return torch.from_numpy(packet).float()
+        return torch.from_numpy(packet).float(), is_regular
 
 
 if __name__ == "__main__":
