@@ -116,7 +116,7 @@ class CanDataset(Dataset):
     def __getitem__(self, idx):
         # [cur_idx ~ cur_idx + packet_num)
         start_i = self.datum[self.idx_map[idx]][0]
-        is_regular = self.datum[self.idx_map[idx + self.packet_num - 1]][1]
+        is_regular = self.datum[self.idx_map[idx]][1]
 
         packet = np.zeros((const.CAN_DATA_LEN * self.packet_num))
         for next_i in range(self.packet_num):
