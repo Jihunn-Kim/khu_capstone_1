@@ -126,7 +126,7 @@ class CanDataset(Dataset):
                 data_value = int(self.csv.iloc[start_i + next_i, 2 + j], 16) / 255.0
                 packet[j + const.CAN_DATA_LEN * next_i] = data_value
 
-        return torch.from_numpy(packet).float(), torch.LongTensor([is_regular])
+        return torch.from_numpy(packet).float()
 
 
 if __name__ == "__main__":

@@ -60,7 +60,7 @@ def add_args(parser):
     parser.add_argument('--n_nets', type=int, default=100,
                         help='number of workers in a distributed cluster')
     parser.add_argument('--comm_type', type=str, default='fedprox', 
-                            help='which type of communication strategy is going to be used')    
+                            help='type of communication, [fedavg, fedprox, fedtwa, feddw, edge]')  
     parser.add_argument('--comm_round', type=int, default=50, 
                             help='how many round of communications we shoud use')
     parser.add_argument('--weight_save_path', type=str, default='./weights', 
