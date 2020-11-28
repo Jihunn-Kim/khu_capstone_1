@@ -9,5 +9,5 @@
 - Install [PyTorch](http://pytorch.org)
 - Train model
 ```bash
-python3 fed_train.py --packet_num 3 --fold_num 0 --batch_size 128 --lr 0.001 --n_nets 100 \n --comm_type fedprox --comm_round 50
+python3 fed_train.py --packet_num 3 --fold_num 0 --batch_size 128 --lr 0.001 --n_nets 100 --comm_type fedprox --comm_round 50
 ```
