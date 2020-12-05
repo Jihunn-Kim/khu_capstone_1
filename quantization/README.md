@@ -1,12 +1,12 @@
 # 추론시간 개선 - 양자화 시도
 
 ## Pytorch quantization
-- Pytorch 가 제공하는 라이브러리로 양자화 학습.
+- Pytorch 가 제공하는 라이브러리로 양자화 학습 - 실패
 - 하지만 cpu 에서만 실행 가능, 또한 모델의 채널 수를 신중하게 고르지 않으면 cpu 에서 조차 속도 개선이 미미함. 
 - 양자화 과정으로 학습된 모델은 pytorch model -> onnx -> tensorRT 변환이 불가능하여 gpu 에서 실행 불가능.
 
 ## TensorRT
-- Google Colab - install_tensorRT
+- Google Colab - install_tensorRT.ipynb
 
 - 양자화 학습을 사용하지 않고, 라이브러리를 활용하여 모델의 정밀도 감소 및 양자화 시도. 
 

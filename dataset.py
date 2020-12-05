@@ -120,7 +120,6 @@ class CanDataset(Dataset):
 
         packet = np.zeros((const.CAN_DATA_LEN * self.packet_num))
         for next_i in range(self.packet_num):
-            packet = np.zeros((const.CAN_DATA_LEN * self.packet_num))
             data_len = self.csv.iloc[start_i + next_i, 1]
             for j in range(data_len):
                 data_value = int(self.csv.iloc[start_i + next_i, 2 + j], 16) / 255.0
@@ -128,6 +127,89 @@ class CanDataset(Dataset):
 
         return torch.from_numpy(packet).float(), is_regular
 
+
+def GetCanDatasetCNN(total_edge, fold_num, csv_path, txt_path):
+    csv = pd.read_csv(csv_path)
+    txt = open(txt_path, "r")
+    lines = txt.read().splitlines()
+
+    idx = 0
+    datum = []
+    label_temp = []
+    while idx < len(csv) // 2:
+        line = lines[idx]
+        if not line:
+            break
+
+        if line.split(' ')[1] == 'R':
+            datum.append((idx, 1))
+            label_temp.append(1)
+        else:
+            datum.append((idx, 0))
+            label_temp.append(0)
+
+        idx += 1
+        if (idx % 1000000 == 0):
+            print(idx)
+
+    fold_length = int(len(label_temp) / 5)
+    train_datum = []
+    train_label_temp = []
+    for i in range(5):
+        if i != fold_num:
+            train_datum += datum[i*fold_length:(i+1)*fold_length]
+            train_label_temp += label_temp[i*fold_length:(i+1)*fold_length]
+        else:
+            test_datum = datum[i*fold_length:(i+1)*fold_length]
+
+
+    N = len(train_label_temp)
+    train_label_temp = np.array(train_label_temp)
+
+    proportions = np.random.dirichlet(np.repeat(1, total_edge))
+    proportions = np.cumsum(proportions)
+    idx_batch = [[] for _ in range(total_edge)]
+    data_idx_map = {}
+    prev = 0.0
+    for j in range(total_edge):
+        idx_batch[j] = [idx for idx in range(int(prev * N), int(proportions[j] * N))]
+        prev = proportions[j]
+        data_idx_map[j] = idx_batch[j]
+
+    _, net_data_count = record_net_data_stats(train_label_temp, data_idx_map)
+
+    return CanDatasetCNN(csv, train_datum), data_idx_map, net_data_count, CanDatasetCNN(csv, test_datum, False)
+
+
+class CanDatasetCNN(Dataset):
+
+    def __init__(self, csv, datum, is_train=True):
+        self.csv = csv
+        self.datum = datum
+        if is_train:
+          self.idx_map = []
+        else:
+          self.idx_map = [idx for idx in range(len(self.datum))]
+
+    def __len__(self):
+        return len(self.idx_map)
+
+    def set_idx_map(self, data_idx_map):
+        self.idx_map = data_idx_map
+
+    def __getitem__(self, idx):
+        start_i = self.datum[self.idx_map[idx]][0]
+        is_regular = self.datum[self.idx_map[idx]][1]
+        
+        packet = np.zeros((1, const.CNN_FRAME_LEN, const.CNN_FRAME_LEN))
+        for i in range(const.CNN_FRAME_LEN):
+            data_len = self.csv.iloc[start_i + i, 1]
+            for j in range(data_len):
+                k = int(self.csv.iloc[start_i + i, 2 + j], 16) / 255.0
+                packet[0][i][j] = k
+
+        return torch.from_numpy(packet).float(), is_regular
+        
 
 if __name__ == "__main__":
     pass

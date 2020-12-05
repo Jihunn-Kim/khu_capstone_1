@@ -48,7 +48,9 @@ alpha, beta, gamma = 40.0/100.0, 40.0/100.0, 20.0/100.0
 
 def add_args(parser):
     parser.add_argument('--packet_num', type=int, default=1,
-                        help='packet number used in training, 1 ~ 3')
+                        help='packet number used in training, 1 ~ 3 for OneNet')
+    parser.add_argument('--model', type=str, default='cnn',
+                        help='model used for training, one for cnn, default=one')
     parser.add_argument('--fold_num', type=int, default=0, 
                         help='5-fold, 0 ~ 4')
     parser.add_argument('--batch_size', type=int, default=128,
@@ -57,8 +59,8 @@ def add_args(parser):
                         help='learning rate')
     parser.add_argument('--n_nets', type=int, default=100,
                         help='number of workers in a distributed cluster')
-    parser.add_argument('--comm_type', type=str, default='fedprox', 
-                            help='type of communication, [fedavg, fedprox, fedtwa, feddw, edge]')  
+    parser.add_argument('--comm_type', type=str, default='edge', 
+                            help='type of communication, [fedavg, fedprox, fedtwa, feddw, edge]')    
     parser.add_argument('--comm_round', type=int, default=50, 
                             help='how many round of communications we shoud use')
     parser.add_argument('--weight_save_path', type=str, default='./weights', 
@@ -67,19 +69,23 @@ def add_args(parser):
     return args
 
 
-def test_model(fed_model, args, testloader, device):
+def test_model(fed_model, args, testloader, device, cr):
     fed_model.to(device)
     fed_model.eval()
 
     cnt = 0
     step_acc = 0.0
     with torch.no_grad():
-        packet_state = torch.zeros(args.batch_size, model.STATE_DIM).to(device)
+        if args.model == 'one':
+            packet_state = torch.zeros(args.batch_size, model.STATE_DIM).to(device)
         for i, (inputs, labels) in enumerate(testloader):
             inputs, labels = inputs.to(device), labels.to(device)
             
-            outputs, packet_state = fed_model(inputs, packet_state)
-            packet_state = torch.autograd.Variable(packet_state, requires_grad=False)
+            if args.model == 'one':
+                outputs, packet_state = fed_model(inputs, packet_state)
+                packet_state = torch.autograd.Variable(packet_state, requires_grad=False)
+            elif args.model == 'cnn':
+                outputs = fed_model(inputs)
 
             _, preds = torch.max(outputs, 1)
 
@@ -120,9 +126,13 @@ def start_fedavg(fed_model, args,
 
         for edge_progress, edge_index in enumerate(selected_edge):
             train_data_set.set_idx_map(data_idx_map[edge_index])
-            sampler = dataset.BatchIntervalSampler(len(train_data_set), args.batch_size)
-            train_loader = torch.utils.data.DataLoader(train_data_set, batch_size=args.batch_size, sampler=sampler,
-                                                    shuffle=False, num_workers=2, drop_last=True)
+            if args.model == 'one':
+                sampler = dataset.BatchIntervalSampler(len(train_data_set), args.batch_size)
+                train_loader = torch.utils.data.DataLoader(train_data_set, batch_size=args.batch_size, sampler=sampler,
+                                                        shuffle=False, num_workers=2, drop_last=True)
+            elif args.model == 'cnn':
+                train_loader = torch.utils.data.DataLoader(train_data_set, batch_size=args.batch_size,
+                                                        shuffle=False, num_workers=2)
             print("[%2d/%2d] edge: %d, data len: %d" % (edge_progress, len(selected_edge), edge_index, len(train_data_set)))
 
             edges[edge_index] = copy.deepcopy(fed_model)
@@ -131,12 +141,16 @@ def start_fedavg(fed_model, args,
             edge_opt = optim.Adam(params=edges[edge_index].parameters(), lr=args.lr)
 
             # train
-            packet_state = torch.zeros(args.batch_size, model.STATE_DIM).to(device)
+            if args.model == 'one':
+                packet_state = torch.zeros(args.batch_size, model.STATE_DIM).to(device)
             for data_idx, (inputs, labels) in enumerate(train_loader):
                 inputs, labels = inputs.to(device), labels.to(device)
 
-                edge_pred, packet_state = edges[edge_index](inputs, packet_state)
-                packet_state = torch.autograd.Variable(packet_state, requires_grad=False)
+                if args.model == 'one':
+                    edge_pred, packet_state = edges[edge_index](inputs, packet_state)
+                    packet_state = torch.autograd.Variable(packet_state, requires_grad=False)
+                elif args.model == 'cnn':
+                    edge_pred = edges[edge_index](inputs)
 
                 edge_opt.zero_grad()
 
@@ -161,8 +175,8 @@ def start_fedavg(fed_model, args,
                     update_state[key] += local_state[key] * (net_data_count[k] / total_data_count)
         
         fed_model.load_state_dict(update_state)
-        if cr % 10 == 0:
-            test_model(fed_model, args, testloader, device)
+        if cr % 10 == 0 and cr > 35:
+            test_model(fed_model, args, testloader, device, cr)
 
 
 def start_fedprox(fed_model, args,
@@ -189,9 +203,14 @@ def start_fedprox(fed_model, args,
 
         for edge_progress, edge_index in enumerate(selected_edge):
             train_data_set.set_idx_map(data_idx_map[edge_index])
-            sampler = dataset.BatchIntervalSampler(len(train_data_set), args.batch_size)
-            train_loader = torch.utils.data.DataLoader(train_data_set, batch_size=args.batch_size, sampler=sampler,
-                                                    shuffle=False, num_workers=2, drop_last=True)
+            if args.model == 'one':
+                sampler = dataset.BatchIntervalSampler(len(train_data_set), args.batch_size)
+                train_loader = torch.utils.data.DataLoader(train_data_set, batch_size=args.batch_size, sampler=sampler,
+                                                        shuffle=False, num_workers=2, drop_last=True)
+            elif args.model == 'cnn':
+                train_loader = torch.utils.data.DataLoader(train_data_set, batch_size=args.batch_size,
+                                                        shuffle=False, num_workers=2)
+            
             print("[%2d/%2d] edge: %d, data len: %d" % (edge_progress, len(selected_edge), edge_index, len(train_data_set)))
 
             edge_model = copy.deepcopy(fed_model)
@@ -203,8 +222,11 @@ def start_fedprox(fed_model, args,
             for data_idx, (inputs, labels) in enumerate(train_loader):
                 inputs, labels = inputs.to(device), labels.to(device)
 
-                edge_pred, packet_state = edge_model(inputs, packet_state)
-                packet_state = torch.autograd.Variable(packet_state, requires_grad=False)
+                if args.model == 'one':
+                    edge_pred, packet_state = edge_model(inputs, packet_state)
+                    packet_state = torch.autograd.Variable(packet_state, requires_grad=False)
+                elif args.model == 'cnn':
+                    edge_pred = edge_model(inputs)
 
                 edge_opt.zero_grad()
 
@@ -235,7 +257,7 @@ def start_fedprox(fed_model, args,
         fed_model.to(device)
 
         if cr % 10 == 0:
-            test_model(fed_model, args, testloader, device)
+            test_model(fed_model, args, testloader, device, cr)
             fed_model.to(device)
 
 
@@ -266,9 +288,14 @@ def start_fedtwa(fed_model, args,
         for edge_progress, edge_index in enumerate(selected_edge):
             time_stamp[edge_index] = cr
             train_data_set.set_idx_map(data_idx_map[edge_index])
-            sampler = dataset.BatchIntervalSampler(len(train_data_set), args.batch_size)
-            train_loader = torch.utils.data.DataLoader(train_data_set, batch_size=args.batch_size, sampler=sampler,
-                                                    shuffle=False, num_workers=2, drop_last=True)
+            if args.model == 'one':
+                sampler = dataset.BatchIntervalSampler(len(train_data_set), args.batch_size)
+                train_loader = torch.utils.data.DataLoader(train_data_set, batch_size=args.batch_size, sampler=sampler,
+                                                        shuffle=False, num_workers=2, drop_last=True)
+            elif args.model == 'cnn':
+                train_loader = torch.utils.data.DataLoader(train_data_set, batch_size=args.batch_size,
+                                                        shuffle=False, num_workers=2)
+            
             print("[%2d/%2d] edge: %d, data len: %d" % (edge_progress, len(selected_edge), edge_index, len(train_data_set)))
 
             edges[edge_index] = copy.deepcopy(fed_model)
@@ -281,8 +308,11 @@ def start_fedtwa(fed_model, args,
             for data_idx, (inputs, labels) in enumerate(train_loader):
                 inputs, labels = inputs.float().to(device), labels.long().to(device)
 
-                edge_pred, packet_state = edges[edge_index](inputs, packet_state)
-                packet_state = torch.autograd.Variable(packet_state, requires_grad=False)
+                if args.model == 'one':
+                    edge_pred, packet_state = edges[edge_index](inputs, packet_state)
+                    packet_state = torch.autograd.Variable(packet_state, requires_grad=False)
+                elif args.model == 'cnn':
+                    edge_pred = edges[edge_index](inputs)
 
                 edge_opt.zero_grad()
 
@@ -309,7 +339,7 @@ def start_fedtwa(fed_model, args,
 
         fed_model.load_state_dict(update_state)
         if cr % 10 == 0:
-            test_model(fed_model, args, testloader, device)
+            test_model(fed_model, args, testloader, device, cr)
 
 
 def start_feddw(fed_model, args,
@@ -372,9 +402,14 @@ def start_feddw(fed_model, args,
         for edge_progress, edge_index in enumerate(selected_edge):
             worker_selected_frequency[edge_index] += 1
             train_data_set.set_idx_map(data_idx_map[edge_index])
-            sampler = dataset.BatchIntervalSampler(len(train_data_set), args.batch_size)
-            train_loader = torch.utils.data.DataLoader(train_data_set, batch_size=args.batch_size, sampler=sampler,
-                                                    shuffle=False, num_workers=2, drop_last=True)
+            if args.model == 'one':
+                sampler = dataset.BatchIntervalSampler(len(train_data_set), args.batch_size)
+                train_loader = torch.utils.data.DataLoader(train_data_set, batch_size=args.batch_size, sampler=sampler,
+                                                        shuffle=False, num_workers=2, drop_last=True)
+            elif args.model == 'cnn':
+                train_loader = torch.utils.data.DataLoader(train_data_set, batch_size=args.batch_size,
+                                                        shuffle=False, num_workers=2)
+            
             print("[%2d/%2d] edge: %d, data len: %d" % (edge_progress, len(selected_edge), edge_index, len(train_data_set)))
 
             edges[edge_index] = copy.deepcopy(fed_model)
@@ -383,12 +418,16 @@ def start_feddw(fed_model, args,
             edge_opt = optim.Adam(params=edges[edge_index].parameters(), lr=args.lr)
 
             # train
-            packet_state = torch.zeros(args.batch_size, model.STATE_DIM).to(device)
+            if args.model == 'one':
+                packet_state = torch.zeros(args.batch_size, model.STATE_DIM).to(device)
             for data_idx, (inputs, labels) in enumerate(train_loader):
-                inputs, labels = inputs.float().to(device), labels.long().to(device)
+                inputs, labels = inputs.to(device), labels.to(device)
 
-                edge_pred, packet_state = edges[edge_index](inputs, packet_state)
-                packet_state = torch.autograd.Variable(packet_state, requires_grad=False)
+                if args.model == 'one':
+                    edge_pred, packet_state = edges[edge_index](inputs, packet_state)
+                    packet_state = torch.autograd.Variable(packet_state, requires_grad=False)
+                elif args.model == 'cnn':
+                    edge_pred = edges[edge_index](inputs)
 
                 edge_opt.zero_grad()
 
@@ -407,12 +446,16 @@ def start_feddw(fed_model, args,
             cnt = 0
             step_acc = 0.0
             with torch.no_grad():
-                packet_state = torch.zeros(args.batch_size, model.STATE_DIM).to(device)
+                if args.model == 'one':
+                    packet_state = torch.zeros(args.batch_size, model.STATE_DIM).to(device)
                 for inputs, labels in local_test_loader:
-                  inputs, labels = inputs.float().to(device), labels.long().to(device)
+                  inputs, labels = inputs.to(device), labels.to(device)
 
-                  edge_pred, packet_state = edges[edge_index](inputs, packet_state)
-                  packet_state = torch.autograd.Variable(packet_state, requires_grad=False)
+                  if args.model == 'one':
+                      edge_pred, packet_state = edges[edge_index](inputs, packet_state)
+                      packet_state = torch.autograd.Variable(packet_state, requires_grad=False)
+                  elif args.model == 'cnn':
+                      edge_pred = edges[edge_index](inputs)
 
                   _, preds = torch.max(edge_pred, 1)
 
@@ -447,7 +490,7 @@ def start_feddw(fed_model, args,
 
         fed_model.load_state_dict(update_state)
         if cr % 10 == 0:
-          test_model(fed_model, args, testloader, device)
+          test_model(fed_model, args, testloader, device, cr)
 
 
 def start_only_edge(args,
@@ -465,9 +508,14 @@ def start_only_edge(args,
 
         for edge_index, edge_model in enumerate(edges):
             train_data_set.set_idx_map(data_idx_map[edge_index])
-            sampler = dataset.BatchIntervalSampler(len(train_data_set), args.batch_size)
-            train_loader = torch.utils.data.DataLoader(train_data_set, batch_size=args.batch_size, sampler=sampler,
-                                                    shuffle=False, num_workers=2, drop_last=True)
+            if args.model == 'one':
+                sampler = dataset.BatchIntervalSampler(len(train_data_set), args.batch_size)
+                train_loader = torch.utils.data.DataLoader(train_data_set, batch_size=args.batch_size, sampler=sampler,
+                                                        shuffle=False, num_workers=2, drop_last=True)
+            elif args.model == 'cnn':
+                train_loader = torch.utils.data.DataLoader(train_data_set, batch_size=args.batch_size,
+                                                        shuffle=False, num_workers=2)
+            
             print("edge[%2d/%2d] data len: %d" % (edge_index, len(edges), len(train_data_set)))
 
             edge_model.to(device)
@@ -479,9 +527,12 @@ def start_only_edge(args,
             for data_idx, (inputs, labels) in enumerate(train_loader):
                 inputs, labels = inputs.float().to(device), labels.long().to(device)
 
-                edge_pred, packet_state = edge_model(inputs, packet_state)
-                packet_state = torch.autograd.Variable(packet_state, requires_grad=False)
-
+                if args.model == 'one':
+                    edge_pred, packet_state = edge_model(inputs, packet_state)
+                    packet_state = torch.autograd.Variable(packet_state, requires_grad=False)
+                elif args.model == 'cnn':
+                    edge_pred = edge_model(inputs)
+                    
                 edge_opt.zero_grad()
 
                 edge_loss = criterion(edge_pred, labels)
@@ -494,20 +545,24 @@ def start_only_edge(args,
                     # break
 
             # test
-            # if cr < 4:
-            #     continue
+            if cr < 4:
+                continue
             edge_model.eval()
             total_loss = 0.0
             cnt = 0
             step_acc = 0.0
             with torch.no_grad():
-                packet_state = torch.zeros(args.batch_size, model.STATE_DIM).to(device)
+                if args.model == 'one':
+                    packet_state = torch.zeros(args.batch_size, model.STATE_DIM).to(device)
                 for i, (inputs, labels) in enumerate(testloader):
                     inputs, labels = inputs.float().to(device), labels.long().to(device)
                     
-                    outputs, packet_state = edge_model(inputs, packet_state)
-                    packet_state = torch.autograd.Variable(packet_state, requires_grad=False)
-
+                    if args.model == 'one':
+                        outputs, packet_state = edge_model(inputs, packet_state)
+                        packet_state = torch.autograd.Variable(packet_state, requires_grad=False)
+                    elif args.model == 'cnn':
+                        outputs = edge_model(inputs)
+                        
                     _, preds = torch.max(outputs, 1)
 
                     loss = criterion(outputs, labels)
@@ -525,10 +580,10 @@ def start_only_edge(args,
             print("edge[%2d/%2d] acc: %.4f" % (edge_index, len(edges), edge_accuracy))
             edge_model.to('cpu')
 
-        # if cr < 4:
-        #     continue
+        if cr < 4:
+            continue
         edge_accuracy_avg = sum(edge_accuracy_list) / len(edge_accuracy_list)
-        torch.save(edges[0].state_dict(), os.path.join(weight_path, 'edge_%d_%.4f.pth' % (cr, edge_accuracy_avg)))
+        torch.save(edges[0].state_dict(), os.path.join(args.weight_save_path, 'edge_%d_%.4f.pth' % (cr, edge_accuracy_avg)))
 
 
 
@@ -547,14 +602,22 @@ def start_train():
     torch.manual_seed(seed)
 
     print("Loading data...")
-    train_data_set, data_idx_map, net_data_count, test_data_set = dataset.GetCanDataset(args.n_nets, args.fold_num, args.packet_num, "./dataset/Mixed_dataset.csv", "./dataset/Mixed_dataset_1.txt")
+    if args.model == 'one':
+        train_data_set, data_idx_map, net_data_count, test_data_set = dataset.GetCanDataset(args.n_nets, args.fold_num, args.packet_num, "./dataset/Mixed_dataset.csv", "./dataset/Mixed_dataset_1.txt")
+        sampler = dataset.BatchIntervalSampler(len(test_data_set), args.batch_size)
+        testloader = torch.utils.data.DataLoader(test_data_set, batch_size=args.batch_size, sampler=sampler,
+                                                shuffle=False, num_workers=2, drop_last=True)
+    elif args.model == 'cnn':
+        train_data_set, data_idx_map, net_data_count, test_data_set = dataset.GetCanDatasetCNN(args.n_nets, args.fold_num, "./dataset/Mixed_dataset.csv", "./dataset/Mixed_dataset_CNN8.txt")
+        testloader = torch.utils.data.DataLoader(test_data_set, batch_size=args.batch_size,
+                                                shuffle=False, num_workers=2)
 
-    sampler = dataset.BatchIntervalSampler(len(test_data_set), args.batch_size)
-    testloader = torch.utils.data.DataLoader(test_data_set, batch_size=args.batch_size, sampler=sampler,
-                                            shuffle=False, num_workers=2, drop_last=True)
-
-    fed_model = model.OneNet(args.packet_num)
-    edges = [model.OneNet(args.packet_num) for _ in range(args.n_nets)]
+    if args.model == 'one':
+        fed_model = model.OneNet(8, args.packet_num)
+        edges = [model.OneNet(8, args.packet_num) for _ in range(args.n_nets)]
+    elif args.model == 'cnn':
+        fed_model = model.CnnNet()
+        edges = [model.CnnNet() for _ in range(args.n_nets)]
 
     if args.comm_type == "fedavg":
         start_fedavg(fed_model, args,

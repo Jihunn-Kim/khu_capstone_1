@@ -10,20 +10,20 @@ importlib.reload(utils)
 importlib.reload(model)
 importlib.reload(dataset)
 
-from utils import *
+from utils_simple import *
 import torch.quantization
 
 
 def add_args(parser):
-    # parser.add_argument('--model', type=str, default='moderate-cnn',
+    # parser.add_argument('--model', type=str, default='one',
     #                     help='neural network used in training')
     parser.add_argument('--dataset', type=str, default='cifar10', metavar='N',
                         help='dataset used for training')
     parser.add_argument('--fold_num', type=int, default=0, 
                         help='5-fold, 0 ~ 4')
-    parser.add_argument('--batch_size', type=int, default=256, metavar='N',
+    parser.add_argument('--batch_size', type=int, default=128, metavar='N',
                         help='input batch size for training')
-    parser.add_argument('--lr', type=float, default=0.002, metavar='LR',
+    parser.add_argument('--lr', type=float, default=0.001, metavar='LR',
                         help='learning rate')
     parser.add_argument('--n_nets', type=int, default=100, metavar='NN',
                         help='number of workers in a distributed cluster')
@@ -194,19 +194,13 @@ def start_train():
     torch.manual_seed(seed)
 
     print("Loading data...")
-    # kwargs = {"./dataset/DoS_dataset.csv" : './DoS_dataset.txt',
-    #         "./dataset/Fuzzy_dataset.csv" : './Fuzzy_dataset.txt',
-    #         "./dataset/RPM_dataset.csv" : './RPM_dataset.txt',
-    #         "./dataset/gear_dataset.csv" : './gear_dataset.txt'
-    # }
     kwargs = {"./dataset/DoS_dataset.csv" : './DoS_dataset.txt'}
-    train_data_set, data_idx_map, net_class_count, net_data_count, test_data_set = dataset.GetCanDatasetUsingTxtKwarg(args.n_nets, args.fold_num, **kwargs)
+    train_data_set, data_idx_map, _, net_data_count, test_data_set = dataset.GetCanDatasetUsingTxtKwarg(args.n_nets, args.fold_num, **kwargs)
     testloader = torch.utils.data.DataLoader(test_data_set, batch_size=args.batch_size,
                                             shuffle=False, num_workers=2)
 
-    run_benchmark('./quan.pth', testloader)
-    run_benchmark('./float.pth', testloader)
     # run_benchmark('./quan.pth', testloader)
+    # run_benchmark('./float.pth', testloader)
 
     fed_model = model.Net()
     args.comm_type = 'fedavg'
