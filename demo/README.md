@@ -1,3 +1,3 @@
 # 데모 프로그램
 
-![demo](images\demo.png)
+<img src='../images/demo.png' width=400>
