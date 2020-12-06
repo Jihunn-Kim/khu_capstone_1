@@ -2,9 +2,8 @@
 
 ## 자율자동차를 위한 연합학습 기반 유해 트래픽 탐지
 
-![figure2](images\figure2.png)
-
-![figure3](images\figure3.png)
+<img src='images/figure2.png' width=640>
+<img src='images/figure3.png' width=400>
 
 ### 서론
 
