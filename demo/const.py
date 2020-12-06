@@ -1,0 +1,1 @@
+CAN_DATA_LEN    = 8
