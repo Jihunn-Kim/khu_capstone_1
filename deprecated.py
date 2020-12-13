@@ -554,3 +554,22 @@ def Mix_Six_SynCANDataset():
             break
 
     save_csv.close()
+    
+def test():
+    x = np.arange(10, 51, 10)
+    y = [0, 0, 0, 0, 0]
+    y2 = [1, 1, 1, 1, 1]
+    y3 = [2, 2, 2, 2, 2]
+    y4 = [3, 3, 3, 3, 3]
+    plt.figure(figsize=[9, 7])
+    plt.plot(x,y,'b',label='fed avg')
+    plt.plot(x,y2,'r',label='fed prox')
+    plt.plot(x,y3,'g',label='fed dynamic')
+    plt.plot(x,y4,'m',label='fed timstamp')
+    plt.xlabel('Communication Round')
+    plt.ylabel('Accuracy')
+    plt.title('')
+    plt.legend(loc='upper right', prop={'size': 10})
+    # plt.show()
+
+    plt.savefig('./savefig_default.png')
